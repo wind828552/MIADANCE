@@ -4,13 +4,13 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>MIA DANCE 2024 年度舞展選位系統</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://unpkg.com/lucide@latest"></script>
+    <script src="[https://cdn.tailwindcss.com](https://cdn.tailwindcss.com)"></script>
+    <script src="[https://unpkg.com/lucide@latest](https://unpkg.com/lucide@latest)"></script>
     <!-- Firebase SDKs -->
     <script type="module">
-        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, collection, doc, onSnapshot, runTransaction, writeBatch, updateDoc, deleteDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { initializeApp } from "[https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js](https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js)";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "[https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js](https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js)";
+        import { getFirestore, collection, doc, onSnapshot, runTransaction, writeBatch, updateDoc, deleteDoc } from "[https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js](https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js)";
 
         // --- Firebase Config & Global Variables ---
         // 在本地執行時，請將下方的 config 內容替換為您自己的 Firebase 設定
@@ -98,7 +98,7 @@
             state.form = { ...state.form, [field]: value };
         };
 
-        // 更新編輯中的訂單資料
+        // 更新編輯中的訂單資料 (此處僅剩後五碼會用到)
         window.updateEditingForm = (field, value) => {
             if (!state.editingForm) return;
             state.editingForm = { ...state.editingForm, [field]: value };
@@ -154,11 +154,7 @@
             const order = state.orders.find(o => o.id === orderId);
             if (order) {
                 const editingForm = {
-                    userName: order.userName,
-                    userPhone: order.userPhone,
-                    paymentMethod: order.paymentMethod, // 用於判斷顯示
-                    last5Digits: order.last5Digits || '',
-                    ticketType: order.ticketType // 用於判斷顯示
+                    last5Digits: order.last5Digits || ''
                 };
                 window.setState({ selectedOrder: order, modal: 'orderDetail', modalMode: 'edit', editingForm });
             }
@@ -172,27 +168,23 @@
             }
         };
 
-        // 儲存編輯後的資訊 (姓名、電話、匯款後五碼)
+        // 儲存編輯後的資訊 (僅限匯款後五碼)
         window.saveOrderEdits = async () => {
-            if (!state.selectedOrder || !state.editingForm) return;
+            if (!state.selectedOrder) return;
             if (isLocalMode) { window.showMessage("離線模式無法儲存"); return; }
             
-            // 取得最新輸入值
-            const nameInput = document.getElementById('edit-name');
-            const phoneInput = document.getElementById('edit-phone');
             const last5Input = document.getElementById('edit-last5');
+            // 如果輸入框存在則取值，否則保持原樣 (現金模式下不會有輸入框)
+            const last5 = last5Input ? last5Input.value : (state.selectedOrder.last5Digits || '');
             
-            // 姓名、電話、後五碼可改
             const newData = {
-                userName: nameInput ? nameInput.value : state.editingForm.userName,
-                userPhone: phoneInput ? phoneInput.value : state.editingForm.userPhone,
-                last5Digits: last5Input ? last5Input.value : (state.selectedOrder.last5Digits || '')
+                last5Digits: last5
             };
 
             const ref = doc(db, 'artifacts', appId, 'public', 'data', COLLECTION_ORDERS, state.selectedOrder.id);
             try {
                 await updateDoc(ref, newData);
-                window.showMessage("訂單資料已更新", "success");
+                window.showMessage("匯款資訊已更新", "success");
                 window.setState({ modal: null, selectedOrder: null, editingForm: null });
             } catch (e) {
                 window.showMessage("儲存失敗");
@@ -247,4 +239,10 @@
             if (isLocalMode) { window.showMessage("離線模式無法儲存"); return; }
 
             window.setState({ isProcessing: true });
-            const orderId = state.swapTargetOrder.ord
+            const orderId = state.swapTargetOrder.orderId;
+            const docId = state.swapTargetOrder.id;
+            const unitPrice = parseInt(state.swapTargetOrder.ticketType);
+            const newTotalPrice = state.selectedSeats.length * unitPrice;
+
+            try {
+                await runTransact
