@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MIA DANCE 2024 年度舞展選位系統</title>
+    <script src="[https://cdn.tailwindcss.com](https://cdn.tailwindcss.com)"></script>
+    <script src="[https://unpkg.com/lucide@latest](https://unpkg.com/lucide@latest)"></script>
+    <!-- Firebase SDKs -->
+    <script type="module">
+        import { initializeApp } from "[https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js](https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js)";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "[https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js](https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js)";
+        import { getFirestore, collection, doc, onSnapshot, runTransaction, writeBatch, updateDoc, deleteDoc } from "[https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js](https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js)";
+
+        // --- Firebase Config & Global Variables ---
+        // 在本地執行時，請將下方的 config 內容替換為您自己的 Firebase 設定
+        let firebaseConfig;
+        let isLocalMode = false;
+
+        try {
+            if (typeof __firebase_config !== 'undefined') {
+                firebaseConfig = JSON.parse(__firebase_config);
+            } else {
+                throw new Error("Local environment");
+            }
+        } catch (e) {
+            console.warn("檢測到本地環境，啟用離線預覽模式（或請填入 Firebase Config）。");
+            // 若您在本地端要連線資料庫，請填寫下方資訊
+            firebaseConfig = {
+                apiKey: "請填入您的API_KEY",
+                authDomain: "您的專案.firebaseapp.com",
+                projectId: "您的專案ID",
+                // ... 其他設定
+            };
+            // 若沒填寫 apiKey，則視為離線模式
+            if (firebaseConfig.apiKey === "請填入您的API_KEY") {
+                isLocalMode = true;
+            }
+        }
+
+        let app, auth, db;
+        try {
+            if (!isLocalMode) {
+                app = initializeApp(firebaseConfig);
+                auth = getAuth(app);
+                db = getFirestore(app);
+            }
+        } catch (err) {
+            console.error("Firebase Init Error:", err);
+            isLocalMode = true;
+        }
+
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'mia-dance-ticketing';
+        const SEAT_PRICE = 600; // 預設價格，實際由票種決定
+        const MAX_TICKETS = 5;
+        const COLLECTION_SEATS = 'seats';
+        const COLLECTION_ORDERS = 'orders';
+        const ADMIN_PASSWORD = 'miadance';
+
+        // --- State ---
+        let state = {
+            user: null,
+            isAdmin: false,
+            currentStep: 'selection',
+            seats: [],
+            selectedSeats: [],
+            orders: [],
+            isProcessing: false,
+            successOrder: null,
+            searchTerm: '',
+            adminFilter: 'all',
+            // Modals & Form Data
+            modal: null, 
+            modalMode: 'edit', // 'edit' (輸入資料) or 'verify' (確認入帳)
+            confirmCallback: null,
+            confirmMessage: '',
+            selectedOrder: null,
+            editingForm: null,
+            isSwapping: false,
+            swapTargetOrder: null,
+            
+            form: {
+                name: '',
+                phone: '',
+                ticketType: '650', // 預設早鳥
+                paymentMethod: 'cash', // 預設現金
+                paymentDate: new Date().toISOString().split('T')[0] // 預設今天
+            }
+        };
+
+        // --- Core Functions ---
+        window.setState = (newState) => {
+            state = { ...state, ...newState };
+            render();
+        };
+
+        window.updateForm = (field, value) => {
+            state.form = { ...state.form, [field]: value };
+        };
+
+        // 更新編輯中的訂單資料 (此處僅剩後五碼會用到)
+        window.updateEditingForm = (field, value) => {
+            if (!state.editingForm) return;
+            state.editingForm = { ...state.editingForm, [field]: value };
+        };
+
+        window.showMessage = (msg, type = "error") => {
+            const toast = document.getElementById('toast');
+            if (!toast) return;
+            toast.className = `fixed top-24 left-1/2 -translate-x-1/2 z-[100] px-6 py-3 rounded-full shadow-2xl flex items-center gap-2 animate-bounce ${type === 'success' ? 'bg-green-500' : 'bg-red-500'} text-white transition-opacity duration-300`;
+            toast.innerHTML = `<i data-lucide="${type === 'success' ? 'check-circle' : 'alert-circle'}"></i> <span class="font-medium">${msg}</span>`;
+            toast.style.display = 'flex';
+            if (window.lucide) window.lucide.createIcons();
+            setTimeout(() => { toast.style.display = 'none'; }, 3000);
+        };
+
+        // --- Modal Actions ---
+        window.openLoginModal = () => {
+            if (state.isAdmin) {
+                window.openConfirmModal("確定要退出管理模式嗎？", () => {
+                    window.setState({ isAdmin: false, currentStep: 'selection', selectedSeats: [] });
+                    window.showMessage("已登出管理模式", "success");
+                });
+            } else {
+                window.setState({ modal: 'login' });
+            }
+        };
+
+        window.handleLoginSubmit = (e) => {
+            e.preventDefault();
+            const pass = document.getElementById('admin-pass').value;
+            if (pass === ADMIN_PASSWORD) {
+                if (!isLocalMode) initOrdersListener();
+                window.setState({ isAdmin: true, currentStep: 'selection', modal: null });
+                window.showMessage("管理模式已啟動", "success");
+            } else {
+                window.showMessage("密碼錯誤");
+            }
+        };
+
+        window.openConfirmModal = (msg, callback) => {
+            window.setState({ modal: 'confirm', confirmMessage: msg, confirmCallback: callback });
+        };
+
+        window.executeConfirm = () => {
+            if (state.confirmCallback) state.confirmCallback();
+            window.setState({ modal: null, confirmCallback: null });
+        };
+
+        // --- Admin Order Management ---
+        
+        // 模式 1: 點擊鉛筆 -> 編輯/檢視資訊
+        window.openEditOrderModal = (orderId) => {
+            const order = state.orders.find(o => o.id === orderId);
+            if (order) {
+                const editingForm = {
+                    last5Digits: order.last5Digits || ''
+                };
+                window.setState({ selectedOrder: order, modal: 'orderDetail', modalMode: 'edit', editingForm });
+            }
+        };
+
+        // 模式 2: 點擊打勾 -> 確認核銷
+        window.openVerifyOrderModal = (orderId) => {
+            const order = state.orders.find(o => o.id === orderId);
+            if (order) {
+                window.setState({ selectedOrder: order, modal: 'orderDetail', modalMode: 'verify', editingForm: null });
+            }
+        };
+
+        // 儲存編輯後的資訊 (僅限匯款後五碼)
+        window.saveOrderEdits = async () => {
+            if (!state.selectedOrder) return;
+            if (isLocalMode) { window.showMessage("離線模式無法儲存"); return; }
+            
+            const last5Input = document.getElementById('edit-last5');
+            // 如果輸入框存在則取值，否則保持原樣 (現金模式下不會有輸入框)
+            const last5 = last5Input ? last5Input.value : (state.selectedOrder.last5Digits || '');
+            
+            const newData = {
+                last5Digits: last5
+            };
+
+            const ref = doc(db, 'artifacts', appId, 'public', 'data', COLLECTION_ORDERS, state.selectedOrder.id);
+            try {
+                await updateDoc(ref, newData);
+                window.showMessage("匯款資訊已更新", "success");
+                window.setState({ modal: null, selectedOrder: null, editingForm: null });
+            } catch (e) {
+                window.showMessage("儲存失敗");
+            }
+        };
+
+        // 確認入帳
+        window.confirmOrderPaid = async () => {
+            if (!state.selectedOrder) return;
+            if (isLocalMode) { window.showMessage("離線模式無法儲存"); return; }
+
+            if (state.selectedOrder.paymentMethod === 'transfer' && !state.selectedOrder.last5Digits) {
+                window.showMessage("請先填寫匯款後五碼", "error");
+                return;
+            }
+
+            const ref = doc(db, 'artifacts', appId, 'public', 'data', COLLECTION_ORDERS, state.selectedOrder.id);
+            try {
+                await updateDoc(ref, { status: 'paid' });
+                window.showMessage("訂單已完成入帳", "success");
+                window.setState({ modal: null, selectedOrder: null });
+            } catch (e) {
+                window.showMessage("更新失敗");
+            }
+        };
+
+        // --- Seat Swapping Logic ---
+        
+        window.startSeatSwap = () => {
+            if (!state.selectedOrder) return;
+            const currentOrderSeats = state.seats.filter(s => {
+                if (state.selectedOrder.seatIds) return state.selectedOrder.seatIds.includes(s.id);
+                return state.selectedOrder.seats.includes(`${s.row}${s.number}`);
+            });
+
+            window.setState({ 
+                isSwapping: true, 
+                swapTargetOrder: state.selectedOrder, 
+                selectedSeats: currentOrderSeats, 
+                currentStep: 'selection', 
+                modal: null 
+            });
+            window.showMessage("請於座位圖重新選擇座位", "success");
+        };
+
+        window.confirmSeatSwap = async () => {
+            if (!state.isSwapping || !state.swapTargetOrder) return;
+            if (state.selectedSeats.length === 0) {
+                window.showMessage("請至少選擇一個座位");
+                return;
+            }
+            if (isLocalMode) { window.showMessage("離線模式無法儲存"); return; }
+
+            window.setState({ isProcessing: true });
+            const orderId = state.swapTargetOrder.orderId;
+            const docId = state.swapTargetOrder.id;
+            const unitPrice = parseInt(state.swapTargetOrder.ticketType);
+            const newTotalPrice = state.selectedSeats.length * unitPrice;
+
+            try {
+                await runTransact
